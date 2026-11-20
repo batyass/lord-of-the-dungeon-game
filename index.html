@@ -199,8 +199,19 @@ const engine = new Engine(GODOT_CONFIG);
 		}
 	} else {
 		setStatusMode('progress');
-		// index.pck is split into parts; sw.js streams them back as one file.
-	const startEngine = () => engine.startGame({
+		// index.pck is split into parts. Preferred path: sw.js streams them back as
+	// one file. Fallback (for browsers that block service workers in a
+	// third-party iframe): join the parts into a Blob URL the engine can fetch.
+	const PACK_PARTS = ["index.pck.part1","index.pck.part2","index.pck.part3"];
+
+	const notify = (type, message) => {
+		try {
+			window.parent.postMessage({ type: type, message: message || '' }, '*');
+		} catch (error) { /* not embedded */ }
+	};
+
+	const startEngine = (mainPack) => engine.startGame({
+			'mainPack': mainPack,
 			'onProgress': function (current, total) {
 				if (current > 0 && total > 0) {
 					statusProgress.value = current;
@@ -211,41 +222,47 @@ const engine = new Engine(GODOT_CONFIG);
 				}
 			},
 		}).then(() => {
-			sessionStorage.removeItem('pack-worker-reload');
 			setStatusMode('hidden');
-		}, displayFailureNotice);
+			notify('ltd:ready');
+		}, (error) => {
+			displayFailureNotice(error);
+			notify('ltd:error', error && error.message ? error.message : String(error));
+		});
+
+	async function streamedPack() {
+		if (!('serviceWorker' in navigator)) return false;
+		try {
+			await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
+			await navigator.serviceWorker.ready;
+			if (!navigator.serviceWorker.controller) {
+				await new Promise((resolve) => {
+					navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+					setTimeout(resolve, 2500);
+				});
+			}
+			return !!navigator.serviceWorker.controller;
+		} catch (error) {
+			return false;
+		}
+	}
+
+	async function blobPack() {
+		const blobs = await Promise.all(PACK_PARTS.map(async (part) => {
+			const response = await fetch(part);
+			if (!response.ok) throw new Error('Could not fetch ' + part + ' (' + response.status + ')');
+			return response.blob();
+		}));
+		return URL.createObjectURL(new Blob(blobs, { type: 'application/octet-stream' }));
+	}
 
 	setStatusMode('progress');
-	const canStream = 'serviceWorker' in navigator;
-	if (!canStream) {
-		startEngine();
-	} else {
-		navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
-			.then(() => navigator.serviceWorker.ready)
-			.then(() => {
-				if (navigator.serviceWorker.controller) {
-					startEngine();
-					return;
-				}
-				const ready = new Promise((resolve) => {
-					navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
-					setTimeout(resolve, 3000);
-				});
-				return ready.then(() => {
-					if (navigator.serviceWorker.controller) {
-						startEngine();
-						return;
-					}
-					if (sessionStorage.getItem('pack-worker-reload')) {
-						startEngine();
-						return;
-					}
-					sessionStorage.setItem('pack-worker-reload', '1');
-					window.location.reload();
-				});
-			})
-			.catch(displayFailureNotice);
-	}
+	streamedPack()
+		.then((streamed) => (streamed ? 'index.pck' : blobPack()))
+		.then((mainPack) => startEngine(mainPack))
+		.catch((error) => {
+			displayFailureNotice(error);
+			notify('ltd:error', error && error.message ? error.message : String(error));
+		});
 	}
 }());
 		</script>

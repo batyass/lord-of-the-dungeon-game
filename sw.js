@@ -1,4 +1,6 @@
-// Streams the split game pack as a single index.pck response.
+// Streams the split game pack as a single index.pck response. The page falls
+// back to a Blob URL when a service worker is unavailable (for example in a
+// third-party iframe where the browser blocks registration).
 const PARTS = ["index.pck.part1","index.pck.part2","index.pck.part3"];
 const PACK_BYTES = 138079860;
 
